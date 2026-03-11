@@ -1,0 +1,216 @@
+name: "Mark Ready When Ready"
+description: >
+  Automatically marks a draft pull request as ready for review once all
+  required checks pass. Add a label to your draft PR, and this action
+  watches for green builds, verifies them via the GraphQL API, and
+  transitions the PR out of draft.
+
+inputs:
+  github-token:
+    description: >
+      A GitHub token with permission to read checks/statuses and write
+      to pull requests. Can be GITHUB_TOKEN (with appropriate permissions),
+      a PAT, or a GitHub App token.
+    required: true
+  label:
+    description: "The label that triggers the action."
+    required: false
+    default: "Mark Ready When Ready"
+  pause-seconds:
+    description: >
+      Seconds to pause between the first and second round of check
+      verification. This helps catch late-arriving or re-triggered checks.
+    required: false
+    default: "20"
+  remove-label:
+    description: "Whether to remove the trigger label after marking the PR ready."
+    required: false
+    default: "true"
+
+outputs:
+  result:
+    description: >
+      Outcome of the action: "ready" if the PR was marked ready,
+      "failing-checks" if required checks failed, "conflicting" if the
+      PR has merge conflicts, or "skipped" if preconditions were not met.
+    value: ${{ steps.resolve.outputs.result }}
+  failing-checks:
+    description: "Names of required checks that failed (if any)."
+    value: ${{ steps.resolve.outputs.failing_checks }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Wait for required checks (round 1)
+      id: wait-once
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO_NWO: ${{ github.repository }}
+      run: |
+        gh pr checks "$PR_NUMBER" --repo "$REPO_NWO" --watch --required --fail-fast
+
+    - name: Pause between verification rounds
+      if: steps.wait-once.outcome == 'success'
+      shell: bash
+      run: sleep ${{ inputs.pause-seconds }}
+
+    - name: Wait for required checks (round 2)
+      id: wait-again
+      if: steps.wait-once.outcome == 'success'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO_NWO: ${{ github.repository }}
+      run: |
+        gh pr checks "$PR_NUMBER" --repo "$REPO_NWO" --watch --required --fail-fast
+
+    - name: Verify required checks via GraphQL
+      id: trust-but-verify
+      if: steps.wait-once.outcome == 'success' && steps.wait-again.outcome == 'success'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_HEAD_USER: ${{ github.event.pull_request.head.user.login }}
+        PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.name }}
+      run: |
+        all_check_runs='[]'
+        has_next_page=true
+        cursor=""
+
+        while [ "$has_next_page" = "true" ]; do
+          if [ -z "$cursor" ]; then
+            cursor_param=""
+          else
+            cursor_param=", after: \"$cursor\""
+          fi
+
+          response=$(gh api graphql -f query="query {
+            repository(owner: \"$PR_HEAD_USER\", name: \"$PR_HEAD_REPO\") {
+              pullRequest(number: $PR_NUMBER) {
+                mergeable
+                commits(last: 1) {
+                  nodes {
+                    commit {
+                      checkSuites(first: 100${cursor_param}) {
+                        pageInfo {
+                          hasNextPage
+                          endCursor
+                        }
+                        nodes {
+                          checkRuns(
+                            first: 100
+                            filterBy: {checkType: LATEST, conclusions: [ACTION_REQUIRED, TIMED_OUT, CANCELLED, FAILURE, STARTUP_FAILURE]}
+                          ) {
+                            nodes {
+                              name
+                              isRequired(pullRequestNumber: $PR_NUMBER)
+                            }
+                          }
+                        }
+                      }
+                      status {
+                        contexts {
+                          context
+                          state
+                          isRequired(pullRequestNumber: $PR_NUMBER)
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }")
+
+          page_check_runs=$(echo "$response" | jq 'try .data.repository.pullRequest.commits.nodes[].commit.checkSuites.nodes[].checkRuns.nodes[] // empty')
+          if [ "$all_check_runs" = "[]" ]; then
+            all_check_runs=$(echo "$page_check_runs" | jq -s '.')
+          else
+            all_check_runs=$(echo "$all_check_runs" | jq --argjson new_runs "$(echo "$page_check_runs" | jq -s '.')" '. + $new_runs')
+          fi
+
+          has_next_page=$(echo "$response" | jq -r '.data.repository.pullRequest.commits.nodes[].commit.checkSuites.pageInfo.hasNextPage // false')
+          cursor=$(echo "$response" | jq -r '.data.repository.pullRequest.commits.nodes[0].commit.checkSuites.pageInfo.endCursor // ""')
+
+          if [ ! -f /tmp/pr_info_$PR_NUMBER.json ]; then
+            echo "$response" > /tmp/pr_info_$PR_NUMBER.json
+          fi
+        done
+
+        failing_suites=$(echo "$all_check_runs" | jq -r '.[] | select(.isRequired == true) | .name')
+        failing_statuses=$(jq -r '.data.repository.pullRequest.commits.nodes[].commit.status.contexts[] | select(.isRequired == true) | select(.state == "FAILURE") | .context' /tmp/pr_info_$PR_NUMBER.json 2>/dev/null || echo "")
+        mergeable=$(jq -r '.data.repository.pullRequest.mergeable' /tmp/pr_info_$PR_NUMBER.json)
+
+        echo "failing_required_check_suites=$failing_suites" >> $GITHUB_OUTPUT
+        echo "failing_required_statuses=$failing_statuses" >> $GITHUB_OUTPUT
+        echo "mergeable=$mergeable" >> $GITHUB_OUTPUT
+
+        rm -f /tmp/pr_info_$PR_NUMBER.json
+
+        echo "::group::Verification results"
+        echo "Required check suites that failed: $failing_suites"
+        echo "Required commit statuses that failed: $failing_statuses"
+        echo "Mergeable state: $mergeable"
+        echo "::endgroup::"
+
+    - name: Mark PR as ready for review
+      id: mark-ready
+      if: |
+        steps.wait-once.outcome == 'success' &&
+        steps.wait-again.outcome == 'success' &&
+        steps.trust-but-verify.outcome == 'success' &&
+        steps.trust-but-verify.outputs.failing_required_check_suites == '' &&
+        steps.trust-but-verify.outputs.failing_required_statuses == '' &&
+        steps.trust-but-verify.outputs.mergeable != 'CONFLICTING'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO_NWO: ${{ github.repository }}
+        REMOVE_LABEL: ${{ inputs.remove-label }}
+        LABEL: ${{ inputs.label }}
+      run: |
+        gh pr ready "$PR_NUMBER" --repo "$REPO_NWO"
+
+        if [ "$REMOVE_LABEL" = "true" ]; then
+          gh pr edit "$PR_NUMBER" --repo "$REPO_NWO" --remove-label "$LABEL"
+        fi
+
+    - name: Resolve outcome
+      id: resolve
+      if: always()
+      shell: bash
+      env:
+        WAIT_ONCE: ${{ steps.wait-once.outcome }}
+        WAIT_AGAIN: ${{ steps.wait-again.outcome }}
+        VERIFY: ${{ steps.trust-but-verify.outcome }}
+        MARK_READY: ${{ steps.mark-ready.outcome }}
+        FAILING_SUITES: ${{ steps.trust-but-verify.outputs.failing_required_check_suites }}
+        FAILING_STATUSES: ${{ steps.trust-but-verify.outputs.failing_required_statuses }}
+        MERGEABLE: ${{ steps.trust-but-verify.outputs.mergeable }}
+      run: |
+        failing_checks="$FAILING_SUITES"
+        if [ -n "$FAILING_STATUSES" ]; then
+          if [ -n "$failing_checks" ]; then
+            failing_checks="$failing_checks $FAILING_STATUSES"
+          else
+            failing_checks="$FAILING_STATUSES"
+          fi
+        fi
+        echo "failing_checks=$failing_checks" >> $GITHUB_OUTPUT
+
+        if [ "$MARK_READY" = "success" ]; then
+          echo "result=ready" >> $GITHUB_OUTPUT
+        elif [ "$MERGEABLE" = "CONFLICTING" ]; then
+          echo "result=conflicting" >> $GITHUB_OUTPUT
+        elif [ -n "$failing_checks" ]; then
+          echo "result=failing-checks" >> $GITHUB_OUTPUT
+        elif [ "$WAIT_ONCE" != "success" ] || [ "$WAIT_AGAIN" != "success" ]; then
+          echo "result=failing-checks" >> $GITHUB_OUTPUT
+        else
+          echo "result=skipped" >> $GITHUB_OUTPUT
+        fi
