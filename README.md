@@ -95,6 +95,20 @@ The token provided to `github-token` needs these permissions:
 - **`pull-requests: write`** — to mark the PR ready and manage labels
 - **`contents: read`** — to access repository data
 
+### Repository settings
+
+If you're using the default `GITHUB_TOKEN`, your repository must have
+**"Allow GitHub Actions to create and approve pull requests"** enabled.
+You can find this under **Settings → Actions → General → Workflow
+permissions**.
+
+Without this setting, the `markPullRequestReadyForReview` GraphQL mutation
+will fail with `Resource not accessible by integration`.
+
+If you can't change this setting (e.g., organization policy), use a
+[GitHub App token](#using-a-github-app-token) or a Personal Access Token
+with `repo` scope instead.
+
 ## Verification strategy
 
 The action uses a "trust but verify" approach:

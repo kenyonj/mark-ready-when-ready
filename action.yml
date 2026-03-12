@@ -174,7 +174,13 @@ runs:
         REMOVE_LABEL: ${{ inputs.remove-label }}
         LABEL: ${{ inputs.label }}
       run: |
-        gh pr ready "$PR_NUMBER" --repo "$REPO_NWO"
+        if ! gh pr ready "$PR_NUMBER" --repo "$REPO_NWO" 2>&1; then
+          echo ""
+          echo "::error::Failed to mark PR as ready for review. This is usually a permissions issue."
+          echo "::error::If using GITHUB_TOKEN, ensure your repository has 'Allow GitHub Actions to create and approve pull requests' enabled under Settings → Actions → General → Workflow permissions."
+          echo "::error::Alternatively, use a Personal Access Token (PAT) or GitHub App token with pull request write permissions."
+          exit 1
+        fi
 
         if [ "$REMOVE_LABEL" = "true" ]; then
           gh pr edit "$PR_NUMBER" --repo "$REPO_NWO" --remove-label "$LABEL"
