@@ -16,22 +16,7 @@ This is especially useful for repos with long CI suites — open your PR as a
 draft, slap on the label, and walk away. The PR will be marked ready for review
 only when CI is fully green.
 
-## Important: token requirements
-
-The default `GITHUB_TOKEN` **cannot** call the `markPullRequestReadyForReview`
-GraphQL mutation — this is a [known GitHub platform
-limitation](https://github.com/cli/cli/issues/7213). You must use a **Personal
-Access Token (PAT)** or a **GitHub App token** instead.
-
 ## Usage
-
-### With a Personal Access Token (simplest)
-
-1. [Create a PAT](https://github.com/settings/tokens) with `repo` scope
-   (classic) or `pull-requests: write` + `checks: read` + `statuses: read`
-   (fine-grained)
-2. Add it as a repository secret (e.g., `PAT_TOKEN`)
-3. Reference it in your workflow:
 
 ```yaml
 name: Mark PR Ready When Ready
@@ -40,7 +25,11 @@ on:
   pull_request:
     types: [opened, edited, labeled, unlabeled, synchronize]
 
-permissions: {}
+permissions:
+  checks: read
+  contents: write
+  pull-requests: write
+  statuses: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -57,13 +46,17 @@ jobs:
       - name: Mark ready when ready
         uses: kenyonj/mark-ready-when-ready@v1
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-### With a GitHub App token (recommended for organizations)
+> **Important:** The workflow must include `contents: write` — without it,
+> `GITHUB_TOKEN` cannot call the `markPullRequestReadyForReview` GraphQL
+> mutation and will fail with `Resource not accessible by integration`.
 
-GitHub App tokens are scoped, rotated automatically, and don't tie to a
-personal account — ideal for shared repos and orgs.
+### Using a GitHub App token
+
+For organizations or repos where `GITHUB_TOKEN` permissions are restricted by
+policy, you can use a GitHub App token instead:
 
 ```yaml
     steps:
@@ -96,19 +89,21 @@ personal account — ideal for shared repos and orgs.
 | `result`         | `ready`, `failing-checks`, `conflicting`, or `skipped`                |
 | `failing-checks` | Names of required checks that failed (empty string if all passed)     |
 
-## Required token permissions
+## Required permissions
 
-The token provided to `github-token` needs these scopes / permissions:
+The workflow calling this action needs these permissions for `GITHUB_TOKEN`:
 
-| Scope                  | Why                                              |
-| ---------------------- | ------------------------------------------------ |
-| `checks: read`         | Watch check run status                           |
-| `statuses: read`       | Verify commit status contexts                    |
-| `pull-requests: write` | Mark the PR ready and manage labels              |
-| `contents: read`       | Access repository data via the GraphQL API       |
+```yaml
+permissions:
+  checks: read
+  contents: write       # required for markPullRequestReadyForReview
+  pull-requests: write
+  statuses: read
+```
 
-> **Note:** `GITHUB_TOKEN` cannot be used — see
-> [token requirements](#important-token-requirements) above.
+> **Note:** `contents: write` is required even though the action doesn't modify
+> repository contents. Without it, `GITHUB_TOKEN` cannot call the
+> `markPullRequestReadyForReview` GraphQL mutation.
 
 ## Verification strategy
 
