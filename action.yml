@@ -9,8 +9,8 @@ inputs:
   github-token:
     description: >
       A GitHub token with permission to read checks/statuses and write
-      to pull requests. Can be GITHUB_TOKEN (with appropriate permissions),
-      a PAT, or a GitHub App token.
+      to pull requests. Must be a PAT or GitHub App token — the default
+      GITHUB_TOKEN cannot call markPullRequestReadyForReview.
     required: true
   label:
     description: "The label that triggers the action."
@@ -176,9 +176,9 @@ runs:
       run: |
         if ! gh pr ready "$PR_NUMBER" --repo "$REPO_NWO" 2>&1; then
           echo ""
-          echo "::error::Failed to mark PR as ready for review. This is usually a permissions issue."
-          echo "::error::If using GITHUB_TOKEN, ensure your repository has 'Allow GitHub Actions to create and approve pull requests' enabled under Settings → Actions → General → Workflow permissions."
-          echo "::error::Alternatively, use a Personal Access Token (PAT) or GitHub App token with pull request write permissions."
+          echo "::error::Failed to mark PR as ready for review."
+          echo "::error::The default GITHUB_TOKEN cannot call markPullRequestReadyForReview (known GitHub platform limitation)."
+          echo "::error::Use a Personal Access Token (PAT) or GitHub App token instead. See: https://github.com/kenyonj/mark-ready-when-ready#important-token-requirements"
           exit 1
         fi
 
