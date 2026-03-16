@@ -6,11 +6,14 @@ review once all required checks pass.
 ## How it works
 
 1. You open a draft PR and add a trigger label (default: `Mark Ready When Ready`)
-2. This action watches for all required checks to complete successfully
-3. It pauses briefly, then watches again to catch any late-arriving checks
-4. It verifies results via the GitHub GraphQL API (paginated, handles large check suites)
-5. It confirms the PR has no merge conflicts
-6. If everything looks good, it marks the PR as ready for review and removes the label
+2. The action checks preconditions — if the PR isn't a draft or doesn't have the
+   label, it exits immediately with `result=skipped`
+3. If the repo has no required checks configured, the action skips gracefully
+4. Otherwise, it watches for all required checks to complete successfully
+5. It pauses briefly, then watches again to catch any late-arriving checks
+6. It verifies results via the GitHub GraphQL API (paginated, handles large check suites)
+7. It confirms the PR has no merge conflicts
+8. If everything looks good, it marks the PR as ready for review and removes the label
 
 This is especially useful for repos with long CI suites — open your PR as a
 draft, slap on the label, and walk away. The PR will be marked ready for review
@@ -89,8 +92,13 @@ policy, you can use a GitHub App token instead:
 
 | Output           | Description                                                           |
 | ---------------- | --------------------------------------------------------------------- |
-| `result`         | `ready`, `failing-checks`, `conflicting`, or `skipped`                |
-| `failing-checks` | Names of required checks that failed (empty string if all passed)     |
+| `result`         | `ready`, `failing-checks`, `conflicting`, or `skipped`                                                               |
+| `failing-checks` | Names of required checks that failed (empty string if all passed)                                                     |
+
+The `result` output is `skipped` when:
+- The PR is not a draft
+- The trigger label is not present
+- The repo has no required checks configured
 
 ## Required permissions
 
@@ -112,13 +120,16 @@ permissions:
 
 The action uses a "trust but verify" approach:
 
-1. **`gh pr checks --watch`** watches for required checks to complete
-2. A configurable **pause** catches checks that are re-triggered or start late
-3. **`gh pr checks --watch`** runs again to confirm everything is still green
-4. A **GraphQL query** independently verifies that no required check suites have
+1. **Precondition check** — exits early if the PR isn't a draft or the trigger
+   label isn't present
+2. **`gh pr checks --watch`** watches for required checks to complete (skips
+   gracefully if no required checks are configured)
+3. A configurable **pause** catches checks that are re-triggered or start late
+4. **`gh pr checks --watch`** runs again to confirm everything is still green
+5. A **GraphQL query** independently verifies that no required check suites have
    failing conclusions (`ACTION_REQUIRED`, `TIMED_OUT`, `CANCELLED`, `FAILURE`,
    `STARTUP_FAILURE`) and no required commit statuses are in a `FAILURE` state
-5. The **mergeable state** is checked to ensure the PR doesn't have conflicts
+6. The **mergeable state** is checked to ensure the PR doesn't have conflicts
 
 This multi-layered approach prevents marking a PR as ready when there are
 transient or late-arriving failures.
