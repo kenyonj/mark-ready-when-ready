@@ -58,11 +58,12 @@ That's it. The action validates permissions upfront, checks for the trigger
 label and draft status internally — if anything isn't right, you'll get a
 clear error message or the action exits with `result=skipped`.
 
-> **Important:** The workflow must include `contents: write` at the **job
-> level** — without it, `GITHUB_TOKEN` cannot call the
-> `markPullRequestReadyForReview` GraphQL mutation and will fail with
-> `Resource not accessible by integration`. As of v1.1.2, the action validates
-> permissions upfront and will tell you exactly what's missing.
+> **Important:** The workflow must include `contents: write` — without it,
+> `GITHUB_TOKEN` cannot call the `markPullRequestReadyForReview` GraphQL
+> mutation and will fail with `Resource not accessible by integration`.
+> Permissions can be set at either the workflow or job level. As of v1.1.3,
+> the action validates permissions upfront and will tell you exactly what's
+> missing.
 
 ### Saving runner costs with a job-level guard
 
@@ -153,10 +154,10 @@ permissions:
 > repository contents. Without it, `GITHUB_TOKEN` cannot call the
 > `markPullRequestReadyForReview` GraphQL mutation.
 >
-> As of v1.1.2, the action validates these permissions at the start of every run.
+> As of v1.1.3, the action validates these permissions at the start of every run.
 > If any are missing, it fails immediately with a clear error message showing the
-> exact `permissions:` block to add to your workflow. Permissions should be set at
-> the **job level**, not the top-level workflow `permissions:` key.
+> exact `permissions:` block to add to your workflow. Permissions can be set at
+> either the workflow level or the job level.
 
 ## Verification strategy
 
