@@ -72,16 +72,23 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         REPO_NWO: ${{ github.repository }}
       run: |
-        gh pr checks "$PR_NUMBER" --repo "$REPO_NWO" --watch --required --fail-fast
+        output=$(gh pr checks "$PR_NUMBER" --repo "$REPO_NWO" --watch --required --fail-fast 2>&1) && exit 0
+        if echo "$output" | grep -q "no required checks"; then
+          echo "::notice::No required checks configured — skipping"
+          echo "no_required_checks=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        echo "$output"
+        exit 1
 
     - name: Pause between verification rounds
-      if: steps.preconditions.outputs.should_run == 'true' && steps.wait-once.outcome == 'success'
+      if: steps.preconditions.outputs.should_run == 'true' && steps.wait-once.outcome == 'success' && steps.wait-once.outputs.no_required_checks != 'true'
       shell: bash
       run: sleep ${{ inputs.pause-seconds }}
 
     - name: Wait for required checks (round 2)
       id: wait-again
-      if: steps.preconditions.outputs.should_run == 'true' && steps.wait-once.outcome == 'success'
+      if: steps.preconditions.outputs.should_run == 'true' && steps.wait-once.outcome == 'success' && steps.wait-once.outputs.no_required_checks != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -92,7 +99,7 @@ runs:
 
     - name: Verify required checks via GraphQL
       id: trust-but-verify
-      if: steps.preconditions.outputs.should_run == 'true' && steps.wait-once.outcome == 'success' && steps.wait-again.outcome == 'success'
+      if: steps.preconditions.outputs.should_run == 'true' && steps.wait-once.outcome == 'success' && steps.wait-once.outputs.no_required_checks != 'true' && steps.wait-again.outcome == 'success'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -184,6 +191,7 @@ runs:
       id: mark-ready
       if: |
         steps.preconditions.outputs.should_run == 'true' &&
+        steps.wait-once.outputs.no_required_checks != 'true' &&
         steps.wait-once.outcome == 'success' &&
         steps.wait-again.outcome == 'success' &&
         steps.trust-but-verify.outcome == 'success' &&
@@ -216,6 +224,7 @@ runs:
       shell: bash
       env:
         SHOULD_RUN: ${{ steps.preconditions.outputs.should_run }}
+        NO_REQUIRED_CHECKS: ${{ steps.wait-once.outputs.no_required_checks }}
         WAIT_ONCE: ${{ steps.wait-once.outcome }}
         WAIT_AGAIN: ${{ steps.wait-again.outcome }}
         VERIFY: ${{ steps.trust-but-verify.outcome }}
@@ -224,7 +233,7 @@ runs:
         FAILING_STATUSES: ${{ steps.trust-but-verify.outputs.failing_required_statuses }}
         MERGEABLE: ${{ steps.trust-but-verify.outputs.mergeable }}
       run: |
-        if [ "$SHOULD_RUN" != "true" ]; then
+        if [ "$SHOULD_RUN" != "true" ] || [ "$NO_REQUIRED_CHECKS" = "true" ]; then
           echo "result=skipped" >> $GITHUB_OUTPUT
           echo "failing_checks=" >> $GITHUB_OUTPUT
           exit 0
