@@ -52,14 +52,13 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         missing=()
+        head_sha="${{ github.event.pull_request.head.sha }}"
 
-        # Check repository-level permissions (contents:write shows as push:true)
-        repo_perms=$(gh api "repos/$REPO_NWO" --jq '.permissions' 2>/dev/null) || true
-        if [ -n "$repo_perms" ]; then
-          can_push=$(echo "$repo_perms" | jq -r '.push // false')
-          if [ "$can_push" != "true" ]; then
-            missing+=("contents: write")
-          fi
+        # Check contents:write by trying to create an unreferenced blob
+        # (harmless — orphaned blobs are cleaned up by git GC)
+        blob_result=$(gh api "repos/$REPO_NWO/git/blobs" -X POST -f content="" -f encoding="utf-8" 2>&1) || true
+        if echo "$blob_result" | grep -qi "Resource not accessible\|403\|Not Found"; then
+          missing+=("contents: write")
         fi
 
         # Check pull-requests:write by verifying we can read the PR
@@ -69,7 +68,6 @@ runs:
         fi
 
         # Check checks:read by verifying we can list check runs
-        head_sha="${{ github.event.pull_request.head.sha }}"
         if ! gh api "repos/$REPO_NWO/commits/$head_sha/check-runs?per_page=1" --silent 2>/dev/null; then
           missing+=("checks: read")
         fi
@@ -83,15 +81,13 @@ runs:
           echo ""
           echo "::error::❌ Token is missing required permissions: ${missing[*]}"
           echo ""
-          echo "Your workflow must grant these permissions at the job level:"
+          echo "Add these permissions at the workflow or job level:"
           echo ""
-          echo "  jobs:"
-          echo "    your-job:"
-          echo "      permissions:"
-          echo "        checks: read"
-          echo "        contents: write"
-          echo "        pull-requests: write"
-          echo "        statuses: read"
+          echo "  permissions:"
+          echo "    checks: read"
+          echo "    contents: write"
+          echo "    pull-requests: write"
+          echo "    statuses: read"
           echo ""
           echo "See: https://github.com/kenyonj/mark-ready-when-ready#required-permissions"
           exit 1
