@@ -11,14 +11,17 @@ review once all required checks pass.
 ## How it works
 
 1. You open a draft PR and add a trigger label (default: `Mark Ready When Ready`)
-2. The action checks preconditions — if the PR isn't a draft or doesn't have the
+2. The action validates that the token has all required permissions upfront — if
+   anything is missing, it fails immediately with a clear error showing the exact
+   `permissions:` block to add
+3. It checks preconditions — if the PR isn't a draft or doesn't have the
    label, it exits immediately with `result=skipped`
-3. If the repo has no required checks configured, the action skips gracefully
-4. Otherwise, it watches for all required checks to complete successfully
-5. It pauses briefly, then watches again to catch any late-arriving checks
-6. It verifies results via the GitHub GraphQL API (paginated, handles large check suites)
-7. It confirms the PR has no merge conflicts
-8. If everything looks good, it marks the PR as ready for review and removes the label
+4. If the repo has no required checks configured, the action skips gracefully
+5. Otherwise, it watches for all required checks to complete successfully
+6. It pauses briefly, then watches again to catch any late-arriving checks
+7. It verifies results via the GitHub GraphQL API (paginated, handles large check suites)
+8. It confirms the PR has no merge conflicts
+9. If everything looks good, it marks the PR as ready for review and removes the label
 
 This is especially useful for repos with long CI suites — open your PR as a
 draft, slap on the label, and walk away. The PR will be marked ready for review
@@ -33,12 +36,6 @@ on:
   pull_request:
     types: [opened, edited, labeled, unlabeled, synchronize]
 
-permissions:
-  checks: read
-  contents: write
-  pull-requests: write
-  statuses: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -46,19 +43,26 @@ concurrency:
 jobs:
   mark-ready:
     runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: write
+      pull-requests: write
+      statuses: read
     steps:
       - uses: kenyonj/mark-ready-when-ready@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-That's it. The action checks for the trigger label and draft status
-internally — if the PR isn't a draft or doesn't have the label, the action
-exits immediately with `result=skipped`.
+That's it. The action validates permissions upfront, checks for the trigger
+label and draft status internally — if anything isn't right, you'll get a
+clear error message or the action exits with `result=skipped`.
 
-> **Important:** The workflow must include `contents: write` — without it,
-> `GITHUB_TOKEN` cannot call the `markPullRequestReadyForReview` GraphQL
-> mutation and will fail with `Resource not accessible by integration`.
+> **Important:** The workflow must include `contents: write` at the **job
+> level** — without it, `GITHUB_TOKEN` cannot call the
+> `markPullRequestReadyForReview` GraphQL mutation and will fail with
+> `Resource not accessible by integration`. As of v1.1.2, the action validates
+> permissions upfront and will tell you exactly what's missing.
 
 ### Saving runner costs with a job-level guard
 
@@ -75,6 +79,11 @@ cost:
 jobs:
   mark-ready:
     runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: write
+      pull-requests: write
+      statuses: read
     if: |
       contains(github.event.pull_request.labels.*.name, 'Mark Ready When Ready') &&
       github.event.pull_request.draft == true
@@ -143,21 +152,29 @@ permissions:
 > **Note:** `contents: write` is required even though the action doesn't modify
 > repository contents. Without it, `GITHUB_TOKEN` cannot call the
 > `markPullRequestReadyForReview` GraphQL mutation.
+>
+> As of v1.1.2, the action validates these permissions at the start of every run.
+> If any are missing, it fails immediately with a clear error message showing the
+> exact `permissions:` block to add to your workflow. Permissions should be set at
+> the **job level**, not the top-level workflow `permissions:` key.
 
 ## Verification strategy
 
 The action uses a "trust but verify" approach:
 
-1. **Precondition check** — exits early if the PR isn't a draft or the trigger
+1. **Permission validation** — verifies the token has all required permissions
+   (`contents:write`, `pull-requests:write`, `checks:read`, `statuses:read`)
+   and fails fast with an actionable error message if any are missing
+2. **Precondition check** — exits early if the PR isn't a draft or the trigger
    label isn't present
-2. **`gh pr checks --watch`** watches for required checks to complete (skips
+3. **`gh pr checks --watch`** watches for required checks to complete (skips
    gracefully if no required checks are configured)
-3. A configurable **pause** catches checks that are re-triggered or start late
-4. **`gh pr checks --watch`** runs again to confirm everything is still green
-5. A **GraphQL query** independently verifies that no required check suites have
+4. A configurable **pause** catches checks that are re-triggered or start late
+5. **`gh pr checks --watch`** runs again to confirm everything is still green
+6. A **GraphQL query** independently verifies that no required check suites have
    failing conclusions (`ACTION_REQUIRED`, `TIMED_OUT`, `CANCELLED`, `FAILURE`,
    `STARTUP_FAILURE`) and no required commit statuses are in a `FAILURE` state
-6. The **mergeable state** is checked to ensure the PR doesn't have conflicts
+7. The **mergeable state** is checked to ensure the PR doesn't have conflicts
 
 This multi-layered approach prevents marking a PR as ready when there are
 transient or late-arriving failures.
