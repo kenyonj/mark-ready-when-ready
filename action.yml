@@ -43,6 +43,62 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Validate token permissions
+      id: validate-permissions
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO_NWO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        missing=()
+
+        # Check repository-level permissions (contents:write shows as push:true)
+        repo_perms=$(gh api "repos/$REPO_NWO" --jq '.permissions' 2>/dev/null) || true
+        if [ -n "$repo_perms" ]; then
+          can_push=$(echo "$repo_perms" | jq -r '.push // false')
+          if [ "$can_push" != "true" ]; then
+            missing+=("contents: write")
+          fi
+        fi
+
+        # Check pull-requests:write by verifying we can read the PR
+        # (if we can't even read it, write is definitely missing)
+        if ! gh api "repos/$REPO_NWO/pulls/$PR_NUMBER" --silent 2>/dev/null; then
+          missing+=("pull-requests: write")
+        fi
+
+        # Check checks:read by verifying we can list check runs
+        head_sha="${{ github.event.pull_request.head.sha }}"
+        if ! gh api "repos/$REPO_NWO/commits/$head_sha/check-runs?per_page=1" --silent 2>/dev/null; then
+          missing+=("checks: read")
+        fi
+
+        # Check statuses:read by verifying we can list commit statuses
+        if ! gh api "repos/$REPO_NWO/commits/$head_sha/statuses?per_page=1" --silent 2>/dev/null; then
+          missing+=("statuses: read")
+        fi
+
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo ""
+          echo "::error::❌ Token is missing required permissions: ${missing[*]}"
+          echo ""
+          echo "Your workflow must grant these permissions at the job level:"
+          echo ""
+          echo "  jobs:"
+          echo "    your-job:"
+          echo "      permissions:"
+          echo "        checks: read"
+          echo "        contents: write"
+          echo "        pull-requests: write"
+          echo "        statuses: read"
+          echo ""
+          echo "See: https://github.com/kenyonj/mark-ready-when-ready#required-permissions"
+          exit 1
+        fi
+
+        echo "::notice::✅ Token permissions verified"
+
     - name: Check preconditions
       id: preconditions
       shell: bash
