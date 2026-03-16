@@ -1,9 +1,11 @@
 name: "Mark Ready When Ready"
-description: >
-  Automatically marks a draft pull request as ready for review once all
-  required checks pass. Add a label to your draft PR, and this action
-  watches for green builds, verifies them via the GraphQL API, and
-  transitions the PR out of draft.
+description: >-
+  Automatically marks a draft PR as ready for review once all required checks
+  pass. Label it, walk away, come back ready.
+
+branding:
+  icon: "check-circle"
+  color: "green"
 
 inputs:
   github-token:
