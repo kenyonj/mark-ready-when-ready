@@ -37,21 +37,24 @@ concurrency:
 
 jobs:
   mark-ready:
-    name: Mark as ready after successful checks
     runs-on: ubuntu-latest
-    if: |
-      contains(github.event.pull_request.labels.*.name, 'Mark Ready When Ready') &&
-      github.event.pull_request.draft == true
     steps:
-      - name: Mark ready when ready
-        uses: kenyonj/mark-ready-when-ready@v1
+      - uses: kenyonj/mark-ready-when-ready@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+That's it. The action checks for the trigger label and draft status
+internally — if the PR isn't a draft or doesn't have the label, the action
+exits immediately with `result=skipped`.
+
 > **Important:** The workflow must include `contents: write` — without it,
 > `GITHUB_TOKEN` cannot call the `markPullRequestReadyForReview` GraphQL
 > mutation and will fail with `Resource not accessible by integration`.
+
+> **Tip:** If you want to avoid allocating a runner when the preconditions
+> aren't met, you can optionally add an `if:` to the job — but it's not
+> required.
 
 ### Using a GitHub App token
 
