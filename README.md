@@ -55,9 +55,32 @@ exits immediately with `result=skipped`.
 > `GITHUB_TOKEN` cannot call the `markPullRequestReadyForReview` GraphQL
 > mutation and will fail with `Resource not accessible by integration`.
 
-> **Tip:** If you want to avoid allocating a runner when the preconditions
-> aren't met, you can optionally add an `if:` to the job — but it's not
-> required.
+### Saving runner costs with a job-level guard
+
+The action checks for the trigger label and draft status internally, so a
+job-level `if:` is not strictly required. However, without it GitHub still
+allocates a runner, boots it, and downloads the action before the
+precondition check can exit — that startup cost adds up on busy repos.
+
+Adding an `if:` to the job lets GitHub evaluate the condition from the event
+payload **before** allocating a runner, skipping the job entirely at zero
+cost:
+
+```yaml
+jobs:
+  mark-ready:
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'Mark Ready When Ready') &&
+      github.event.pull_request.draft == true
+    steps:
+      - uses: kenyonj/mark-ready-when-ready@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+This is recommended for repos with frequent PR activity. For smaller repos
+the difference is negligible and you can omit the `if:` for simplicity.
 
 ### Using a GitHub App token
 
