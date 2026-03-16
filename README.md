@@ -3,6 +3,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/kenyonj/mark-ready-when-ready)](https://github.com/kenyonj/mark-ready-when-ready/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub Marketplace](https://img.shields.io/badge/marketplace-mark--ready--when--ready-blue?logo=github)](https://github.com/marketplace/actions/mark-ready-when-ready)
+[![Sponsor](https://img.shields.io/badge/sponsor-♥-pink?logo=github)](https://github.com/sponsors/kenyonj)
 
 A GitHub Action that automatically marks a draft pull request as ready for
 review once all required checks pass.
