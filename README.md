@@ -119,12 +119,14 @@ policy, you can use a GitHub App token instead:
 
 ## Inputs
 
-| Input            | Required | Default                  | Description                                                                |
-| ---------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
-| `github-token`   | Yes      | —                        | Token with permission to read checks and write to pull requests            |
-| `label`          | No       | `Mark Ready When Ready`  | The label that triggers the action                                         |
-| `pause-seconds`  | No       | `20`                     | Seconds to pause between verification rounds (catches late-arriving checks) |
-| `remove-label`   | No       | `true`                   | Whether to remove the trigger label after marking the PR ready             |
+| Input                      | Required | Default                  | Description                                                                |
+| -------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
+| `github-token`             | Yes      | —                        | Token with permission to read checks and write to pull requests            |
+| `label`                    | No       | `Mark Ready When Ready`  | The label that triggers the action                                         |
+| `pause-seconds`            | No       | `20`                     | Seconds to pause between verification rounds (catches late-arriving checks) |
+| `polling-interval-seconds` | No       | `10`                     | Seconds between REST API polls when the fallback is active                 |
+| `polling-timeout-seconds`  | No       | `1800`                   | Maximum seconds to wait for checks during REST API fallback polling        |
+| `remove-label`             | No       | `true`                   | Whether to remove the trigger label after marking the PR ready             |
 
 ## Outputs
 
@@ -159,6 +161,29 @@ permissions:
 > exact `permissions:` block to add to your workflow. Permissions can be set at
 > either the workflow level or the job level.
 
+## Private repos on GitHub Free
+
+The action works on private repos across all GitHub plans. On GitHub Free,
+the `gh pr checks` command fails because its internal GraphQL query accesses
+a restricted field (`checkSuite.workflowRun`). When this happens, the action
+automatically falls back to REST API polling — no configuration required.
+
+The fallback polls the `/commits/{sha}/check-runs` and `/commits/{sha}/status`
+REST endpoints until all checks complete, then hands off to the GraphQL
+verification step (which uses a different query that works on all plans).
+
+You can tune the fallback with `polling-interval-seconds` and
+`polling-timeout-seconds` if your CI suite is particularly long or you want
+tighter polling:
+
+```yaml
+- uses: kenyonj/mark-ready-when-ready@v1
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    polling-interval-seconds: "5"
+    polling-timeout-seconds: "3600"   # wait up to 1 hour
+```
+
 ## Verification strategy
 
 The action uses a "trust but verify" approach:
@@ -169,7 +194,8 @@ The action uses a "trust but verify" approach:
 2. **Precondition check** — exits early if the PR isn't a draft or the trigger
    label isn't present
 3. **`gh pr checks --watch`** watches for required checks to complete (skips
-   gracefully if no required checks are configured)
+   gracefully if no required checks are configured) — automatically falls back
+   to REST API polling on private repos where GraphQL fields are restricted
 4. A configurable **pause** catches checks that are re-triggered or start late
 5. **`gh pr checks --watch`** runs again to confirm everything is still green
 6. A **GraphQL query** independently verifies that no required check suites have

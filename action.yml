@@ -24,6 +24,19 @@ inputs:
       verification. This helps catch late-arriving or re-triggered checks.
     required: false
     default: "20"
+  polling-interval-seconds:
+    description: >
+      Seconds between REST API polls when the fallback is active. Lower
+      values detect completion sooner but use more API calls.
+    required: false
+    default: "10"
+  polling-timeout-seconds:
+    description: >
+      Maximum seconds to wait for checks during REST API fallback polling.
+      The fallback activates automatically on private repos where the
+      GraphQL-based gh pr checks is restricted.
+    required: false
+    default: "1800"
   remove-label:
     description: "Whether to remove the trigger label after marking the PR ready."
     required: false
@@ -125,15 +138,70 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         REPO_NWO: ${{ github.repository }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        POLL_INTERVAL: ${{ inputs.polling-interval-seconds }}
+        POLL_TIMEOUT: ${{ inputs.polling-timeout-seconds }}
       run: |
+        # Try gh pr checks first (better UX: shows check names, streams
+        # updates). Falls back to REST API polling when the GraphQL query
+        # fails — this happens on private repos with GitHub Free plans
+        # because the statusCheckRollup.checkSuite.workflowRun field is
+        # inaccessible to GITHUB_TOKEN.
         output=$(gh pr checks "$PR_NUMBER" --repo "$REPO_NWO" --watch --required --fail-fast 2>&1) && exit 0
+        rc=$?
+
         if echo "$output" | grep -q "no required checks"; then
           echo "::notice::No required checks configured — skipping"
-          echo "no_required_checks=true" >> $GITHUB_OUTPUT
+          echo "no_required_checks=true" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        echo "$output"
-        exit 1
+
+        if ! echo "$output" | grep -qi "Resource not accessible"; then
+          echo "$output"
+          exit $rc
+        fi
+
+        # — Fallback: REST API polling —
+        echo "::notice::gh pr checks hit a GraphQL restriction — falling back to REST API polling"
+        max_wait=$POLL_TIMEOUT
+        interval=$POLL_INTERVAL
+        elapsed=0
+
+        while true; do
+          cr=$(gh api "repos/$REPO_NWO/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100")
+          cr_total=$(echo "$cr" | jq '.total_count')
+          cr_pending=$(echo "$cr" | jq '[.check_runs[] | select(.status != "completed")] | length')
+
+          cs=$(gh api "repos/$REPO_NWO/commits/$HEAD_SHA/status")
+          cs_total=$(echo "$cs" | jq '.total_count')
+          cs_pending=$(echo "$cs" | jq '[.statuses[] | select(.state == "pending")] | length')
+
+          echo "  Check runs: $((cr_total - cr_pending))/${cr_total} done | Statuses: $((cs_total - cs_pending))/${cs_total} resolved"
+
+          # Allow 1 in-progress check run (this workflow's own run)
+          if [ "$cr_pending" -le 1 ] && [ "$cs_pending" -eq 0 ]; then
+            if [ "$cr_total" -le 1 ] && [ "$cs_total" -eq 0 ]; then
+              # No external checks found — wait a bit for them to appear
+              if [ "$elapsed" -ge 60 ]; then
+                echo "::notice::No required checks configured — skipping"
+                echo "no_required_checks=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            else
+              break
+            fi
+          fi
+
+          elapsed=$((elapsed + interval))
+          if [ "$elapsed" -ge "$max_wait" ]; then
+            echo "::error::Timed out waiting for checks after ${max_wait}s"
+            exit 1
+          fi
+
+          sleep "$interval"
+        done
+
+        echo "All checks completed ✓"
 
     - name: Pause between verification rounds
       if: steps.preconditions.outputs.should_run == 'true' && steps.wait-once.outcome == 'success' && steps.wait-once.outputs.no_required_checks != 'true'
@@ -148,8 +216,45 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         REPO_NWO: ${{ github.repository }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        POLL_INTERVAL: ${{ inputs.polling-interval-seconds }}
+        POLL_TIMEOUT: ${{ inputs.polling-timeout-seconds }}
       run: |
-        gh pr checks "$PR_NUMBER" --repo "$REPO_NWO" --watch --required --fail-fast
+        output=$(gh pr checks "$PR_NUMBER" --repo "$REPO_NWO" --watch --required --fail-fast 2>&1) && exit 0
+        rc=$?
+
+        if ! echo "$output" | grep -qi "Resource not accessible"; then
+          echo "$output"
+          exit $rc
+        fi
+
+        # — Fallback: REST API polling —
+        echo "::notice::gh pr checks hit a GraphQL restriction — falling back to REST API polling"
+        max_wait=$POLL_TIMEOUT
+        interval=$POLL_INTERVAL
+        elapsed=0
+
+        while true; do
+          cr_pending=$(gh api "repos/$REPO_NWO/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100" \
+            --jq '[.check_runs[] | select(.status != "completed")] | length')
+          cs_pending=$(gh api "repos/$REPO_NWO/commits/$HEAD_SHA/status" \
+            --jq '[.statuses[] | select(.state == "pending")] | length')
+
+          if [ "$cr_pending" -le 1 ] && [ "$cs_pending" -eq 0 ]; then
+            break
+          fi
+
+          elapsed=$((elapsed + interval))
+          if [ "$elapsed" -ge "$max_wait" ]; then
+            echo "::error::Timed out on round-2 check after ${max_wait}s"
+            exit 1
+          fi
+
+          echo "  Waiting… ($cr_pending check runs pending, $cs_pending statuses pending)"
+          sleep "$interval"
+        done
+
+        echo "Round 2 verification complete ✓"
 
     - name: Verify required checks via GraphQL
       id: trust-but-verify
