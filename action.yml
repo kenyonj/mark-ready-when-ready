@@ -206,7 +206,9 @@ runs:
     - name: Pause between verification rounds
       if: steps.preconditions.outputs.should_run == 'true' && steps.wait-once.outcome == 'success' && steps.wait-once.outputs.no_required_checks != 'true'
       shell: bash
-      run: sleep ${{ inputs.pause-seconds }}
+      env:
+        PAUSE_SECONDS: ${{ inputs.pause-seconds }}
+      run: sleep "$PAUSE_SECONDS"
 
     - name: Wait for required checks (round 2)
       id: wait-again
