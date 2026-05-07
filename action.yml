@@ -294,10 +294,13 @@ runs:
                         nodes {
                           checkRuns(
                             first: 100
-                            filterBy: {checkType: LATEST, conclusions: [ACTION_REQUIRED, TIMED_OUT, CANCELLED, FAILURE, STARTUP_FAILURE]}
+                            filterBy: {checkType: LATEST}
                           ) {
                             nodes {
                               name
+                              conclusion
+                              completedAt
+                              startedAt
                               isRequired(pullRequestNumber: $PR_NUMBER)
                             }
                           }
@@ -332,7 +335,23 @@ runs:
           fi
         done
 
-        failing_suites=$(echo "$all_check_runs" | jq -r '.[] | select(.isRequired == true) | .name')
+        # Dedupe across check suites: GraphQL's checkType: LATEST only
+        # dedupes within a single suite, but the same workflow re-running on
+        # the same SHA produces a new check suite each time. Group by name,
+        # keep the most recently completed/started run per name, then filter
+        # to required runs whose conclusion is a failure state.
+        failing_suites=$(echo "$all_check_runs" | jq -r '
+          group_by(.name)
+          | map(max_by(.completedAt // .startedAt // ""))
+          | .[]
+          | select(.isRequired == true)
+          | select(.conclusion == "ACTION_REQUIRED"
+                or .conclusion == "TIMED_OUT"
+                or .conclusion == "CANCELLED"
+                or .conclusion == "FAILURE"
+                or .conclusion == "STARTUP_FAILURE")
+          | .name
+        ')
         failing_statuses=$(jq -r '.data.repository.pullRequest.commits.nodes[].commit.status.contexts[] | select(.isRequired == true) | select(.state == "FAILURE") | .context' /tmp/pr_info_$PR_NUMBER.json 2>/dev/null || echo "")
         mergeable=$(jq -r '.data.repository.pullRequest.mergeable' /tmp/pr_info_$PR_NUMBER.json)
 
